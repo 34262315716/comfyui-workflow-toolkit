@@ -1,0 +1,426 @@
+{
+  "id": "c718fedb-afac-4739-8bd7-50bffdf07092",
+  "revision": 0,
+  "last_node_id": 7,
+  "last_link_id": 9,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        80.0,
+        80.0
+      ],
+      "size": [
+        390.0,
+        118.0
+      ],
+      "mode": 0,
+      "flags": {},
+      "title": "1. 主模型",
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            1
+          ]
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            2,
+            3
+          ]
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            4
+          ]
+        }
+      ],
+      "widgets_values": [
+        "改成你的模型.safetensors"
+      ],
+      "properties": {
+        "cwf_short": "模型",
+        "Node name for S&R": "CheckpointLoaderSimple",
+        "cnr_id": "model"
+      },
+      "order": 0
+    },
+    {
+      "id": 2,
+      "type": "CLIPTextEncode",
+      "pos": [
+        80.0,
+        248.0
+      ],
+      "size": [
+        390.0,
+        126.0
+      ],
+      "mode": 0,
+      "flags": {},
+      "title": "2. 正向",
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            5
+          ]
+        }
+      ],
+      "widgets_values": [
+        "a cat on a windowsill, soft morning light"
+      ],
+      "properties": {
+        "cwf_short": "正向",
+        "Node name for S&R": "CLIPTextEncode",
+        "cnr_id": "model"
+      },
+      "order": 2
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [
+        656.0,
+        248.0
+      ],
+      "size": [
+        390.0,
+        126.0
+      ],
+      "mode": 0,
+      "flags": {},
+      "title": "3. 负向",
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            6
+          ]
+        }
+      ],
+      "widgets_values": [
+        "blurry, lowres, watermark"
+      ],
+      "properties": {
+        "cwf_short": "负向",
+        "Node name for S&R": "CLIPTextEncode",
+        "cnr_id": "model"
+      },
+      "order": 3
+    },
+    {
+      "id": 4,
+      "type": "EmptyLatentImage",
+      "pos": [
+        560.0,
+        80.0
+      ],
+      "size": [
+        390.0,
+        126.0
+      ],
+      "mode": 0,
+      "flags": {},
+      "title": "4. 空潜空间",
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            7
+          ]
+        }
+      ],
+      "widgets_values": [
+        1024,
+        1024,
+        1
+      ],
+      "properties": {
+        "cwf_short": "潜图",
+        "Node name for S&R": "EmptyLatentImage",
+        "cnr_id": "model"
+      },
+      "order": 1
+    },
+    {
+      "id": 5,
+      "type": "KSampler",
+      "pos": [
+        80.0,
+        424.0
+      ],
+      "size": [
+        390.0,
+        278.0
+      ],
+      "mode": 0,
+      "flags": {},
+      "title": "5. 采样",
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 1
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 5
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 6
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "widgets_values": [
+        42,
+        24,
+        7.0,
+        "euler",
+        "normal",
+        1.0
+      ],
+      "properties": {
+        "cwf_short": "采样",
+        "Node name for S&R": "KSampler",
+        "cnr_id": "model"
+      },
+      "order": 4
+    },
+    {
+      "id": 6,
+      "type": "VAEDecode",
+      "pos": [
+        80.0,
+        822.0
+      ],
+      "size": [
+        390.0,
+        94.0
+      ],
+      "mode": 0,
+      "flags": {},
+      "title": "6. 解码",
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 8
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "cwf_short": "解码",
+        "Node name for S&R": "VAEDecode",
+        "cnr_id": "model"
+      },
+      "order": 5
+    },
+    {
+      "id": 7,
+      "type": "SaveImage",
+      "pos": [
+        80.0,
+        1036.0
+      ],
+      "size": [
+        390.0,
+        98.0
+      ],
+      "mode": 0,
+      "flags": {},
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "widgets_values": [
+        "cwf_demo"
+      ],
+      "properties": {
+        "cwf_short": "保存",
+        "Node name for S&R": "SaveImage",
+        "cnr_id": "image"
+      },
+      "order": 6
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      5,
+      0,
+      "MODEL"
+    ],
+    [
+      2,
+      1,
+      1,
+      2,
+      0,
+      "CLIP"
+    ],
+    [
+      3,
+      1,
+      1,
+      3,
+      0,
+      "CLIP"
+    ],
+    [
+      4,
+      1,
+      2,
+      6,
+      1,
+      "VAE"
+    ],
+    [
+      5,
+      2,
+      0,
+      5,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      6,
+      3,
+      0,
+      5,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      7,
+      4,
+      0,
+      5,
+      3,
+      "LATENT"
+    ],
+    [
+      8,
+      5,
+      0,
+      6,
+      0,
+      "LATENT"
+    ],
+    [
+      9,
+      6,
+      0,
+      7,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "提示词区＋采样区＋载入区",
+      "bounding": [
+        46.0,
+        20.0,
+        1034.0,
+        716.0
+      ],
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "其他",
+      "bounding": [
+        46.0,
+        762.0,
+        458.0,
+        188.0
+      ],
+      "flags": {},
+      "color": "#666"
+    },
+    {
+      "id": 3,
+      "title": "输出区",
+      "bounding": [
+        46.0,
+        976.0,
+        458.0,
+        192.0
+      ],
+      "flags": {},
+      "color": "#e0e0e0"
+    }
+  ],
+  "config": {},
+  "extra": {
+    "workflow_title": "cwf 示例 · 文生图"
+  },
+  "version": 0.4
+}

@@ -1,0 +1,35 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- cwf 运行产物 ----
+# 节点库缓存、别名、笔记、导出图鉴都在用户目录（~/.cwf），不该进仓库。
+# 这里再挡一层，防止有人在仓库里跑出这些。
+node_catalog.json
+object_info.*.json
+atlas/
+store/
+modules/
+*.bak-*
+*.cwf-bak
+
+# ---- 生成物 ----
+out/
+dist/
+build/
+*.skill
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
