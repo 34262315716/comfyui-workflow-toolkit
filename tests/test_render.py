@@ -178,7 +178,9 @@ def _negative_coords():
           _node(2, "B", pos=(-2200, -1900), size=(200, 100))]
     sc = R.build_scene(Graph(ns, [], []))
     w_expected = (200 + 800) + 48 * 2          # 内容宽 800 + 两边留白
-    h_expected = (100 + 100) + 48 * 2
+    # 高度还要算上画布底部给图例留的那条带 —— 它是实打实留出来的，
+    # 不算「被负坐标撑大」。写死数字的话，图例逻辑一变这条就假红。
+    h_expected = (100 + 100) + 48 * 2 + R.legend_band(len(sc.legend), R.Opts())
     check(abs(sc.w - w_expected) < 1.0,
           f"画布被撑大了：{sc.w:.0f}，应该是 {w_expected}")
     check(abs(sc.h - h_expected) < 1.0,
