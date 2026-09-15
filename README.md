@@ -35,7 +35,7 @@ ComfyUI 的工作流文件是给前端 JavaScript 看的，对人和 AI 都不�
 不需要 pip，不需要虚拟环境，不装任何第三方包：
 
 ```bash
-git clone https://github.com/34262315716/cwf.git
+git clone https://github.com/34262315716/comfyui-workflow-toolkit.git
 cd cwf
 python cwf_run.py --help
 ```
