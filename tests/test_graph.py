@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Dict, List
 import copy
 
 from harness import Suite, check, eq, sample_paths, all_workflows, skip, Skipped
@@ -139,19 +140,61 @@ suite.case("排版后除 pos/size/groups/order 外字段全等")(_layout_preserv
 
 
 def _order_is_topological():
-    """order 字段必须拓扑有序，否则 ComfyUI 初始执行顺序会乱。"""
+    """`reorder()` 之后 order 必须拓扑有序 —— **但有环的图不可能有全序**。
+
+    注意测的是哪个函数：`strata.layout()` **只动坐标**，它不碰 order；
+    刷 order 的是 `Graph.reorder()`，由 `cwf beautify` 调用。
+    最初这里只跑了 layout 就断言 order 有序，等于在测一个根本没人做的承诺。
+
+
+    排版算法会拆环（把回边从分层里拿掉），拆出来的回边天然违反
+    「上游 order < 下游」。所以判据不能是"一条都不许违反"，而必须是：
+
+        每一条违反的边，都要能**自证是回边** ——
+        即从它的目标出发沿有向边能走回它的源。
+        走不回去，说明那不是环，就是我们重编号时真的排错了。
+
+    原先写成"一条都不许违反"，结果在一张有环的真实工作流上假红。
+    """
     reg = registry(quiet=True)
     for p in sample_paths() or all_workflows(6):
         g = Graph.load(p)
         strata.layout(g, strata.LayoutOptions(), reg)
+        g.reorder()                     # 这才是刷 order 的那一步（beautify 会调）
         order = {n.id: (n.order if n.order is not None else 0) for n in g.nodes}
+
+        adj: Dict[int, List[int]] = {}
         for l in g.links:
-            if l.origin_id in order and l.target_id in order:
-                check(order[l.origin_id] < order[l.target_id],
-                      f"{os.path.basename(p)}: #{l.origin_id} 的 order 不小于下游 #{l.target_id}")
+            adj.setdefault(l.origin_id, []).append(l.target_id)
+
+        def reaches(src: int, dst: int) -> bool:
+            """从 src 沿有向边能不能走到 dst（就是"这条边在不在环上"）。"""
+            seen, stack = set(), [src]
+            while stack:
+                cur = stack.pop()
+                if cur == dst:
+                    return True
+                if cur in seen:
+                    continue
+                seen.add(cur)
+                stack.extend(adj.get(cur, ()))
+            return False
+
+        bad = []
+        for l in g.links:
+            if l.origin_id not in order or l.target_id not in order:
+                continue
+            if order[l.origin_id] < order[l.target_id]:
+                continue
+            # 违反顺序了：必须是回边才说得过去
+            if not reaches(l.target_id, l.origin_id):
+                bad.append("#%d(ord %d) → #%d(ord %d) 不构成环，却逆序"
+                           % (l.origin_id, order[l.origin_id],
+                              l.target_id, order[l.target_id]))
+        check(not bad, f"{os.path.basename(p)}: " + "；".join(bad[:4]))
 
 
-suite.case("order 字段拓扑有序（上游 < 下游）")(_order_is_topological)
+suite.case("order 拓扑有序：逆序的边必须自证是回边（有环图没有全序）")(_order_is_topological)
 
 
 # ---------------------------------------------------------------- 陈旧 links 自愈

@@ -334,3 +334,14 @@ cwf nodes setcat Fast Groups Bypasser (rgthree) --to 流程与组织/静音
 | 1 | `--strict` 校验发现错误 |
 | 2 | 用户级错误（找不到文件/节点、参数写错、服务不可用） |
 | 130 | 被中断 |
+
+## 负载量化
+
+| 命令 | 干什么 |
+|---|---|
+| `cwf rig` | 设备能力画像：显存/内存/架构/实测速度（`--no-logs` 跳过日志） |
+| `cwf load <流>` | 工作流负载画像（`--no-device` 只算负载，`--no-logs` 不做校准） |
+| `cwf fit <流>` | 负载 vs 能力对照：余量、瓶颈、判定 |
+
+数据来源：`nvidia-smi` + ComfyUI `/system_stats`（设备）、模型文件磁盘字节
+（权重，实测误差 <0.2%）、ComfyUI 日志（实测速度与校准）。

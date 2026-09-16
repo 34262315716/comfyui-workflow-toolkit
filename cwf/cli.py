@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import statistics
 import sys
 import time
 import uuid
@@ -33,6 +34,7 @@ from cwf.lib.schema import (DEFAULT_SERVER, Registry, estimate_size,
                             load_object_info, registry, size_of)
 from cwf.lib import pack as packmod
 from cwf.lib import paths
+from cwf.lib import rig
 
 VERSION = "1.0.0"
 
@@ -2657,6 +2659,194 @@ def _hw_guard(g: Graph, reg: Registry) -> Dict[str, Any]:
     return res
 
 
+def _bar(used: float, total: float, width: int = 22) -> str:
+    """画一条占用条。used/total 同单位。"""
+    if total <= 0:
+        return "─" * width
+    r = max(0.0, min(1.0, used / total))
+    n = int(round(r * width))
+    return "█" * n + "░" * (width - n)
+
+
+def _rig_device(args, comfy_root: str = "") -> "rig.Device":
+    """探测设备，并把 ComfyUI 日志里的实测速度挂上去。"""
+    dev = rig.detect_device(getattr(args, "server", DEFAULT_SERVER),
+                            offline=getattr(args, "offline", False))
+    root = comfy_root or paths.comfy_root()
+    if root and not getattr(args, "no_logs", False):
+        rig.attach_measurements(dev, rig.mine_logs(rig.find_logs(root)))
+    return dev
+
+
+def cmd_rig(args, out: Out) -> None:
+    """设备能力画像：显存 / 内存 / 架构 / 实测速度。"""
+    root = paths.comfy_root()
+    dev = _rig_device(args, root)
+    out.put("device", dev.as_dict())
+
+    out.raw("设备能力画像")
+    out.raw("─" * 60)
+    if not dev.vram_total and not dev.ram_total:
+        out.raw("  ✖ 什么都没探测到。")
+        out.raw("    N 卡装了驱动的话，确认 nvidia-smi 在 PATH 里；")
+        out.raw("    或者启动 ComfyUI 后用 --server 指过去。")
+        out.finish(ok=False)
+        return
+
+    out.raw(f"  显卡      {dev.gpu_name or '未知'}")
+    out.raw(f"  架构      {dev.arch}")
+    out.raw("")
+    if dev.vram_total:
+        used = dev.vram_total - dev.vram_free
+        out.raw("  显存      %s / %s  %s" % (
+            rig.gb(used), rig.gb(dev.vram_total),
+            _bar(used, dev.vram_total)))
+        out.raw("            可用 %s（扣掉驱动与 CUDA 上下文后约 %s）"
+                % (rig.gb(dev.vram_free), rig.gb(dev.vram_usable)))
+    if dev.ram_total:
+        used = dev.ram_total - dev.ram_free
+        out.raw("  内存      %s / %s  %s" % (
+            rig.gb(used), rig.gb(dev.ram_total),
+            _bar(used, dev.ram_total)))
+        out.raw("            可用 %s" % rig.gb(dev.ram_free))
+
+    if dev.measured_sit:
+        sit = dev.measured_sit
+        out.raw("")
+        out.raw("  实测速度  日志里共 %d 条迭代记录" % len(sit))
+        out.raw("            中位 %.2f 秒/迭代 · 最快 %.2f · 最慢 %.2f"
+                % (statistics.median(sit), min(sit), max(sit)))
+    if dev.measured_runs:
+        secs = [t for t, _ in dev.measured_runs]
+        out.raw("  整单耗时  最近 %d 次：%s"
+                % (len(secs), " · ".join("%.0fs" % t for t in secs)))
+
+    out.raw("")
+    out.raw(f"  数据来源  {dev.source}")
+    if dev.comfy_version:
+        out.raw(f"  ComfyUI   {dev.comfy_version} · Python {dev.python_version}")
+    out.finish()
+
+
+def _short_path(p: str, limit: int = 46) -> str:
+    p = str(p).replace("\\", "/")
+    return p if len(p) <= limit else "…" + p[-(limit - 1):]
+
+
+def _print_load(out: Out, load, dev, fit) -> None:
+    name = os.path.basename(out.data.get("path") or "") or "工作流"
+    out.raw(f"负载画像：{name}")
+    out.raw("─" * 60)
+
+    out.raw("  权重合计  %s%s" % (
+        rig.gb(load.weights),
+        "   ← 磁盘实测，误差 <1%" if load.weights else ""))
+    uniq: Dict[str, object] = {}
+    for m in load.models:
+        if m.found:
+            uniq.setdefault(os.path.normcase(m.path), m)
+    resident = sorted([m for m in uniq.values() if m.role == "resident"],
+                      key=lambda m: -m.size)
+    for m in resident[:8]:
+        out.raw("    %-13s %9s  %s" % (m.folder, rig.gb(m.size),
+                                       _short_path(m.value)))
+    if len(resident) > 8:
+        out.raw("    （另有 %d 个较小的常驻文件未列出）" % (len(resident) - 8))
+
+    if load.patches:
+        tot = sum(p.size for p in load.patches)
+        out.raw("")
+        out.raw("  补丁合计  %s   （%d 个 LoRA，合并进基座）" % (rig.gb(tot), len(load.patches)))
+        for p in sorted(load.patches, key=lambda m: -m.size)[:5]:
+            out.raw("    %-13s %9s  %s" % (p.folder, rig.gb(p.size),
+                                           _short_path(p.value)))
+        out.raw("    * 补丁不额外增加常驻峰值：它改写基座权重，")
+        out.raw("      占用仍约等于基座那份。")
+
+    if load.missing:
+        out.raw("")
+        out.raw("  ⚠ %d 个引用的模型本机没有，权重合计偏小：" % len(load.missing))
+        for m in load.missing[:5]:
+            out.raw("      %s   (用在 #%d %s)" % (m.value, m.node_id, m.node_type))
+
+    out.raw("")
+    out.raw("  激活项    %s   （估，不确定度 ±50%%）" % rig.gb(load.activation))
+    if load.width and load.height:
+        out.raw("    潜空间 %d×%d = %.2f MP · %d 帧 · 架构判定 %s"
+                % (load.width, load.height, load.pixels / 1e6,
+                   load.frames, load.arch_hint))
+    out.raw("  运行时开销 %s   （CUDA 上下文 + 驱动 + 碎片）"
+            % rig.gb(load.overhead))
+
+    if not dev or not dev.vram_total:
+        out.raw("")
+        out.raw("  （没拿到设备数据，只给负载。跑 `cwf rig` 看设备能力）")
+        return
+
+    cap = dev.vram_usable or dev.vram_total
+    out.raw("")
+    out.raw("  ── 与这台机器的关系 " + "─" * 34)
+    if fit.streaming_likely:
+        need_v = load.vram_streamed
+        out.raw("  显存需求  %s   （流式模式：只要求装得下一块）" % rig.gb(need_v))
+        out.raw("            %s  %s 可用 · 余量 %s" % (
+            _bar(need_v, cap), rig.gb(cap), rig._fmt_delta(fit.vram_margin)))
+        out.raw("            ⚠ 权重 %s 超过显存，必然走动态流式加载"
+                % rig.gb(load.weights))
+    else:
+        out.raw("  显存需求  %s   （全驻模式）" % rig.gb(load.vram_full))
+        out.raw("            %s  %s 可用 · 余量 %s" % (
+            _bar(load.vram_full, cap), rig.gb(cap),
+            rig._fmt_delta(fit.vram_margin)))
+
+    out.raw("  内存需求  %s" % rig.gb(load.ram))
+    out.raw("            %s  %s 实有 · 余量 %s" % (
+        _bar(load.ram, dev.ram_total), rig.gb(dev.ram_total),
+        rig._fmt_delta(fit.ram_margin)))
+
+    icon = {"轻松": "✓", "够用": "✓", "偏紧": "⚠", "不够": "✖"}.get(fit.level, "?")
+    out.raw("")
+    out.raw("  %s 判定：%s%s" % (
+        icon, fit.level,
+        (" · 瓶颈在%s" % fit.bottleneck) if fit.bottleneck else ""))
+    for a in fit.advice:
+        out.raw("      · %s" % a)
+
+
+def cmd_load(args, out: Out) -> None:
+    """工作流负载画像：需要多少显存和内存。"""
+    g = _load(args, out)
+    root = paths.comfy_root()
+    load = rig.estimate_load(g, root)
+    dev = None
+    fit = None
+    if not getattr(args, "no_device", False):
+        dev = _rig_device(args, root)
+        fit = rig.evaluate(load, dev)
+
+    out.put("load", load.as_dict())
+    if dev:
+        out.put("device", dev.as_dict())
+    if fit:
+        out.put("fit", {"level": fit.level, "bottleneck": fit.bottleneck,
+                        "vram_margin": fit.vram_margin,
+                        "ram_margin": fit.ram_margin,
+                        "streaming_likely": fit.streaming_likely})
+
+    _print_load(out, load, dev, fit)
+
+    if not getattr(args, "no_logs", False):
+        for line in rig.compare_with_log(load, rig.mine_logs(
+                rig.find_logs(root))):
+            out.raw("  " + line)
+    out.finish()
+
+
+def cmd_fit(args, out: Out) -> None:
+    """负载与能力的对照 —— 和 `cwf load` 同一份输出。"""
+    cmd_load(args, out)
+
+
 def cmd_precheck(args, out: Out) -> None:
     """不提交执行，只过一遍"这台机器跑不跑得动"。"""
     path = resolve_workflow(args.workflow)
@@ -3414,6 +3604,25 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--extra", default=None, help="额外的 JSON 字段")
     a.add_argument("--timeout", type=int, default=1800)
     common(a); a.set_defaults(func=cmd_run)
+
+    a = sub.add_parser("rig", help="设备能力画像：显存/内存/架构/实测速度")
+    a.add_argument("--no-logs", action="store_true",
+                   help="不去读 ComfyUI 日志里的实测速度")
+    common(a); a.set_defaults(func=cmd_rig)
+
+    a = sub.add_parser("load", help="工作流负载画像：要多少显存和内存")
+    a.add_argument("workflow")
+    a.add_argument("--root", default=None)
+    a.add_argument("--no-device", action="store_true", help="只算负载，不比设备")
+    a.add_argument("--no-logs", action="store_true", help="不做日志校准")
+    common(a); a.set_defaults(func=cmd_load)
+
+    a = sub.add_parser("fit", help="负载 vs 能力：余量、瓶颈、能不能跑")
+    a.add_argument("workflow")
+    a.add_argument("--root", default=None)
+    a.add_argument("--no-device", action="store_true")
+    a.add_argument("--no-logs", action="store_true")
+    common(a); a.set_defaults(func=cmd_fit)
 
     a = sub.add_parser("precheck", help="硬件预检：这台机器跑不跑得动（不提交）")
     a.add_argument("workflow")
