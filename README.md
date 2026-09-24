@@ -2,7 +2,7 @@
 
 > **Read, edit, compose and auto-layout ComfyUI workflows from the command line —
 > without ever touching the raw JSON by hand.**
-> Zero dependencies (Python standard library only). 36 subcommands. 100% offline.
+> Zero dependencies (Python standard library only). 41 subcommands. 100% offline.
 
 一句话：**别直接读写 ComfyUI 的 JSON，用 `cwf`。**
 
@@ -358,7 +358,7 @@ cwf fit 某个流             # 两者对照：余量、瓶颈、判定
 
 ```
 cwf/
-  cli.py            命令行入口，36 个顶层子命令
+  cli.py            命令行入口，41 个顶层子命令
   lib/
     graph.py        工作流数据模型（节点/连线/槽位/分区），读写与自愈
     schema.py       /object_info 节点字典、尺寸估算、缓存
@@ -370,6 +370,8 @@ cwf/
     store.py        节点知识库（别名 / 笔记 / 收藏）
     terms.py        中文术语表
     paths.py        可移植的路径探测
+    meta.py         生成图元数据读取与统计（cwf meta）
+    sigma.py        sigma 表计算与安全校验（cwf sigma）
     pack.py         模块拆装
 tests/
   run_tests.py      一次跑完全部自测
