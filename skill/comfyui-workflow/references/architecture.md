@@ -145,7 +145,7 @@ tools/cwf/
 零依赖，直接跑：
 
 ```bash
-cd <仓库根>\tools\tests
+cd <仓库根>/tests
 <ComfyUI 的 python> -X utf8 test_graph.py     # 12 项
 <ComfyUI 的 python> -X utf8 test_layout.py    # 20 项
 ```

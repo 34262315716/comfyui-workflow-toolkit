@@ -34,7 +34,7 @@ description: |
 
 ```bash
 # Windows 直接调
-<仓库根>\tools\cwf.cmd <子命令> [参数]
+E:\comfyui\comfy_work_hub\tools\cwf.cmd <子命令> [参数]
 
 # 或跨平台包装脚本（路径已配好，推荐 agent 用这个）
 bash ~/.dsh/skills/comfyui-workflow/scripts/cwf.sh <子命令> [参数]
@@ -46,12 +46,29 @@ bash ~/.dsh/skills/comfyui-workflow/scripts/cwf.sh <子命令> [参数]
 
 | 项 | 值 |
 |---|---|
-| 工具内核 | `<仓库根>\tools\cwf\` |
-| 工作流库根 | `<ComfyUI>/user/default/workflows`（即你的工作流库） |
+| 工具内核 | `E:\comfyui\comfy_work_hub\tools\cwf\` |
+| 工作流库根 | `D:\AItool\ComfyUI\comfyui-def\ComfyUI\user\default\workflows`（436 个 JSON） |
 | ComfyUI 服务 | `http://127.0.0.1:8188` |
-| 缓存 | `~\.cwf\`（节点字典 `object_info.*.json` + 节点库 `node_catalog.json`） |
+| 缓存 | `C:\Users\28643\.cwf\`（节点字典 `object_info.*.json` + 节点库 `node_catalog.json`） |
 
 工具不在上述位置时：`scripts/cwf.sh` 支持用环境变量 `CWF_HOME` / `CWF_PYTHON` 覆盖。
+
+> ### ⚠️ 别用 `cwf.cmd`，用 `cwf.sh`
+>
+> `cwf.cmd` 找 Python 的顺序是「`%CWF_PYTHON%` → 同目录 `.venv` → PATH 上的 `python`」。
+> `E:\comfyui\comfy_work_hub\tools\` 下**没有 `.venv`**，所以它会回退到系统 Python。
+> 实测（2026-09-24）：这个回退路径经 `cmd.exe` 调用时**会卡住 120 秒以上**，
+> 而同一个系统 Python 直接跑 `python cwf_run.py` 却只要 1 秒 —— 卡的是 cmd 那一层。
+>
+> **结论：一律用 `scripts/cwf.sh`**（它显式去找 ComfyUI 的 venv Python），
+> 或直接指定解释器：
+>
+> ```bash
+> D:/AItool/ComfyUI/comfyui-def/ComfyUI/.venv/Scripts/python.exe \
+>   -X utf8 E:/comfyui/comfy_work_hub/tools/cwf_run.py <子命令>
+> ```
+>
+> 注意 `CWF_PYTHON` 走 `cwf.cmd` 也救不了（实测同样超时），别在这上面浪费时间。
 
 ---
 
@@ -389,6 +406,8 @@ cwf nodes list 放大           # 中文别名也能搜
 库：nodes stats|tree|list|show|classify|setcat|atlas|pkg|unused|alias|build
 沉淀：store find|show|mark|note|alias|pin|list|export
 字典：schema search|show|produce|accept|models|categories|refresh|stats
+元数据：meta（读生成图内嵌的采样参数，按 采样器×调度器 统计）
+sigma：sigma（算 sigma 表 / 体检手写序列 / 接力切分）
 跑：run   queue   precheck（硬件预检，不提交）        转：export-api   import-api
 ```
 
@@ -417,7 +436,7 @@ cwf nodes list 放大           # 中文别名也能搜
 | 读不到 `/object_info` | ComfyUI 没启动。用 子命令后加 `--offline` 走缓存，或启动后 `schema refresh` |
 | 报「节点类型不存在」但明明装了 | 那是前端注册的节点，属正常。真缺插件用 `cwf ws resolve` 确认 |
 | `nodes` 统计不对 | 装了新插件要 `cwf nodes build` 重建节点库 |
-| 工具找不到 | 检查 `<仓库根>\tools\cwf.cmd`；或用包装脚本 |
+| 工具找不到 | 检查 `E:\comfyui\comfy_work_hub\tools\cwf.cmd`；或用包装脚本 |
 | 工作流里有一堆 `GetNode/SetNode` | 那是虚拟跳线（传值用的），正常。见 `references/architecture.md` |
 
 ---

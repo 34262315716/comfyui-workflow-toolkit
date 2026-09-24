@@ -1,6 +1,6 @@
 # cwf 命令全表
 
-调用方式：`<仓库根>\tools\cwf.cmd <子命令> [参数]`
+调用方式：`E:\comfyui\comfy_work_hub\tools\cwf.cmd <子命令> [参数]`
 或 `bash ~/.dsh/skills/comfyui-workflow/scripts/cwf.sh <子命令> [参数]`
 
 **通用参数**（几乎所有子命令都支持）：
@@ -18,8 +18,8 @@
 
 ### `cwf ws list` — 列工作流
 ```
---root DIR      工作流库根（默认 <ComfyUI>/user/default/workflows）
---dir SUB       只看某子目录，如 人像、放大、实验
+--root DIR      工作流库根（默认 D:\AItool\ComfyUI\...\user\default\workflows）
+--dir SUB       只看某子目录，如 H3、放大、多角度
 --match S       名字包含 S
 --limit N       最多 N 条
 ```
@@ -68,6 +68,147 @@
 ```
 查：节点类型不存在 / 模型文件不存在 / 连线指向不存在的槽位 / 类型不匹配 /
 必要输入没接线 / 孤儿节点 / 没有终结点。
+
+### `cwf meta [图或目录]` — 读生成图的元数据，按组合统计
+
+回答的是「**我历史上哪套采样器 × 调度器搭配用得最多 / 效果最好**」这类回溯问题。
+数据来自 PNG 文本块里嵌的 ``prompt``（API 格式节点图），所以**不需要 ComfyUI 在线**，
+也不需要装任何插件节点 —— 纯离线、纯标准库（不依赖 Pillow）。
+
+```
+cwf meta <图.png>                 单张：完整配方（采样/模型/LoRA/提示词）
+cwf meta <目录>                   逐张列（默认 30 张）
+cwf meta --mode table             全库组合统计 ← 最常用
+cwf meta --find "euler beta"      只看某组合下的图
+cwf meta --mode prompts           连提示词一起列
+--root <输出目录>                  默认自动探测 ComfyUI 的 output；也可用 CWF_OUTPUT
+--match <串>                      只看文件名包含该串的
+--limit N                         最多列多少张，默认 30
+```
+
+**`--find` 按词匹配**：组合名内部是 `euler + beta`（带加号），但直接写
+`--find "euler beta"` 或只写 `--find beta` 都能命中 —— 空格/加号会被切开做「全部命中」匹配。
+
+实测性能：1600 张全库扫描约 10 秒（约 3 ms/张）。
+
+**两类「读不到」的情况要能分辨**（这对结果解读很重要）：
+
+| 现象 | 含义 |
+|---|---|
+| `without_meta` 计数偏高 | 那批图可能经过二次处理（PS/修图/截图），PNG 文本块被剥掉了 |
+| 组合显示成 `euler + ?` | 采样器不是 `KSampler` 而是分离式节点（SamplerCustom + 独立调度器），当前只取了采样那一半 |
+
+**模型名是怎么认出来的**：采样器的 `model` 输入到真正的 UNETLoader 之间不一定直连，
+实测常见三种形态 —— 直链、LoRA 堆叠、**选择器中转**。第三种是坑：rgthree 的
+`Any Switch` 类节点输入口名是动态的（`any_01/any_02/...`），而且**只有已接线的那个口
+会写进 JSON**。所以回溯时要扫该节点所有「连线型」输入，不能只认 `model` 这一个键。
+
+---
+
+### `cwf sigma` — 算 sigma 表 / 体检手写序列 / 接力切分
+
+给「自定义 sigma」做三件手工极易出错的事。**不需要 ComfyUI 服务在线，也不加载权重**
+（各 model_sampling 类支持空构造，实测可用）。
+
+```bash
+cwf sigma krea2_turbo_int8_convrot.safetensors       # 按文件名认族 → 算序列
+cwf sigma --family flux --steps 13 --scheduler beta  # 指定族/步数/调度器
+cwf sigma --check "0.8, 0.6, 0.45, 0.3"              # 体检一串手写值
+cwf sigma --steps 10 --split 0.5                     # 接力切分：给两段各自的序列
+cwf sigma --ladder "4,8,13,20"                       # 多步数对照，看跨幅怎么变
+--shift N       flux 族的 shift（默认 1.15）
+--json          结构化输出
+```
+
+#### 各族的 sigma 范围（实测，必须记住这张表）
+
+| 族 | 代表模型 | sigma_max | sigma_min |
+|---|---|---|---|
+| `flux` | **Flux / Krea2** | 1.0000 | 0.0003 |
+| `flow` | SD3 / **Qwen-Image** / Z-image | 1.0000 | 0.0010 |
+| `av` | MiniMax H3（音视频） | 1.0000 | 0.0010 |
+| `discrete` | **Anima** / SDXL / Illustrious | **14.6146** | **0.0292** |
+| `edm` | EDM 系 | **120.0** | 0.0020 |
+
+**这是手写 sigma 最大的坑**：范围是模型训练时定死的，写错就废。
+从 0.8 起会初始噪声不足（缺大结构），停在 0.3 不降会留噪点（画面发沙）。
+`--check` 会自动把这两个错误挑出来。
+
+> `av` 与 `flow` 的 sigma 范围**完全相同**，但 `ModelSamplingAV` 多了
+> `audio_shift` / `audio_scale` 两个方法 —— 这正是导演台为什么有
+> `shift_video` 与 `shift_audio` **两个独立参数**（音视频分开调 shift）。
+
+#### 为什么低步数才值得调
+
+同一调度器（beta）不同步数的最大跨幅实测：
+
+```
+ 4 步   最大跨幅 0.403   ← 一步跨掉 40% 的 sigma，容错极小
+ 8 步   最大跨幅 0.241
+13 步   最大跨幅 0.150
+20 步   最大跨幅 0.098   ← 越密越没得可调，各调度器结果趋同
+```
+
+**结论：自定义 sigma 是「低步数时的杠杆」。** 步数一多，调不调几乎一样。
+所以 turbo / 加速 LoRA 场景（步数 4~13）**优先沿用作者推荐值**，不要乱动。
+
+#### 接力切分：最容易翻车的操作
+
+`--split` 会保证 **上段尾 = 下段头**（两段共用切点）：
+
+```
+cwf sigma --family flux --steps 10 --split 0.5
+
+  第一段 7 步 → 1, 0.987, 0.958, 0.912, 0.847, 0.76, 0.643, 0.491
+  第二段 3 步 → 0.491, 0.307, 0.115, 0          ← 从 0.491 接着走
+```
+
+两种错误都要避免：
+- 第二段**不从切点接着走** → 中间那段 sigma 没被采样到
+- 两段**各自从同一点重算** → 同一段被采两遍（画面反复推拉）
+
+#### 采样器与 sigma 的关系
+
+**换模型要重写 sigma，换采样器不用。** 采样器只负责"在给定两点之间怎么走"，
+它手里没有 sigma 表。但有三个例外：
+
+- `dpmpp_2m` 这类会内部把步数 +1 再丢掉最后一步 —— 你的序列不是原样执行
+- 非单调序列（先降后升）只有部分采样器支持，**建议配 `euler`**
+- LCM / Lightning 等蒸馏采样器自带固定节奏，**别在上面叠自定义 sigma**
+
+#### 什么时候才该用它
+
+**没症状就别碰。** 自定义 sigma 不是升级，是急救。四种有明确症状的场景：
+
+| 症状 | 用法 |
+|---|---|
+| 接力采样接缝处画面推拉 | `--split` 拿两段序列 |
+| img2img 想从中间开始（`denoise` 只能从尾巴截） | 直接写起点 |
+| 最后几步细节差一口气 | 末段加密 |
+| 某段 sigma 区间不对，换调度器又全变了 | 局部微调，不动全条 |
+
+#### ManualSigmas 的输入本质（源码级）
+
+```python
+# BasicScheduler：必须接 model，去问模型要基准表
+sigmas = calculate_sigmas(model.get_model_object("model_sampling"), scheduler, total_steps)
+
+# ManualSigmas：没有 model 输入，纯数字
+sigmas = torch.FloatTensor([float(i) for i in re.findall(r"[-+]?(?:\d*\.*\d+)", sigmas)])
+```
+
+`calculate_sigmas` 里有一个 `use_ms` 开关决定"用模型的哪部分"：
+
+| 用模型**整张表** | 只用模型**两个端点** |
+|---|---|
+| `simple` `sgm_uniform` `ddim_uniform` `beta` `normal` `linear_quadratic` | `karras` `exponential` `kl_optimal` |
+
+所以**换 shift 之后**：前者整条曲线都变，后者几乎不变 —— 这解释了「换了 shift
+有的调度器结果大变、有的没变」的现象。
+
+**导演台留了后门**：`MiniMaxH3Director` 有可选输入 `sigmas:SIGMAS`，接上
+`ManualSigmas` 即可自定义；此时 `steps` / `scheduler` / `denoise` 全部失效，
+但 `shift_video` / `shift_audio` **仍然生效**（它们作用在模型层，与 sigma 表是两条路）。
 
 ---
 
@@ -334,14 +475,3 @@ cwf nodes setcat Fast Groups Bypasser (rgthree) --to 流程与组织/静音
 | 1 | `--strict` 校验发现错误 |
 | 2 | 用户级错误（找不到文件/节点、参数写错、服务不可用） |
 | 130 | 被中断 |
-
-## 负载量化
-
-| 命令 | 干什么 |
-|---|---|
-| `cwf rig` | 设备能力画像：显存/内存/架构/实测速度（`--no-logs` 跳过日志） |
-| `cwf load <流>` | 工作流负载画像（`--no-device` 只算负载，`--no-logs` 不做校准） |
-| `cwf fit <流>` | 负载 vs 能力对照：余量、瓶颈、判定 |
-
-数据来源：`nvidia-smi` + ComfyUI `/system_stats`（设备）、模型文件磁盘字节
-（权重，实测误差 <0.2%）、ComfyUI 日志（实测速度与校准）。

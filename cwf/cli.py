@@ -33,8 +33,10 @@ from cwf.lib.graph import (CwfError, Graph, Group, Link, Node, Slot,
 from cwf.lib.schema import (DEFAULT_SERVER, Registry, estimate_size,
                             load_object_info, registry, size_of)
 from cwf.lib import pack as packmod
+from cwf.lib import meta as metamod
 from cwf.lib import paths
 from cwf.lib import rig
+from cwf.lib import sigma as sigmamod
 
 VERSION = "1.0.0"
 
@@ -3153,6 +3155,299 @@ def cmd_stats(args, out: Out) -> None:
         out.raw(f"⚠ {info['orphans']} 个孤立节点没接线")
 
 
+def _fmt_combo_table(rows: List[dict]) -> List[str]:
+    """把聚合结果排成对齐的文本表。"""
+    if not rows:
+        return ["   （没有可统计的采样参数组合）"]
+    w = max(len(r["combo"]) for r in rows)
+    w = min(max(w, 12), 44)
+    out_lines = [f"   {'组合':<{w}}{'张数':>6}   常用步数 / CFG / 模型"]
+    for r in rows:
+        steps = ",".join(list(r["steps"].keys())[:3]) or "-"
+        cfg = ",".join(list(r["cfg"].keys())[:2]) or "-"
+        models = r["models"][:2]
+        mtail = ("  ·  " + ", ".join(os.path.basename(m) for m in models)) if models else ""
+        combo = r["combo"]
+        if len(combo) > w:
+            combo = combo[:w - 1] + "…"
+        out_lines.append(f"   {combo:<{w}}{r['count']:>6}   steps={steps}  cfg={cfg}{mtail}")
+    return out_lines
+
+
+def cmd_sigma(args, out: Out) -> None:
+    """算 sigma 表 / 体检手写序列 / 接力切分。
+
+    回答的是「手写 sigmas 该写什么数」这件事。核心是三件事：
+    查模型范围（写错范围是最常见的坑）、抄一份可用的底子、看清每步跨幅。
+    """
+    fam = args.family
+    if not fam and args.model:
+        fam = sigmamod.guess_family(args.model)
+        if fam:
+            out.say(f"（按文件名认出是 {fam} 族）")
+    if not fam:
+        fam = "flux"
+
+    try:
+        smax, smin = sigmamod.sigma_range(fam, args.shift)
+    except Exception as e:
+        die(f"算不出 {fam} 族的 sigma 范围：{e}")
+
+    out.put("family", fam)
+    out.put("sigma_max", smax)
+    out.put("sigma_min", smin)
+
+    # ---------- 体检模式：给一串现成的序列
+    if args.check:
+        seq = sigmamod.parse_sigmas(args.check)
+        if not seq:
+            die(f"从 {args.check!r} 里没抠出任何数字。")
+        rep = sigmamod.inspect(seq, family=fam, shift=args.shift)
+        out.put("inspect", rep)
+        out.raw(f"模型族: {fam}   该模型范围: {smax:.4f} → {smin:.4f}")
+        out.raw(f"你的序列: {len(seq)} 个值（{len(seq) - 1} 步）")
+        out.raw("  " + sigmamod.to_string(seq))
+        out.raw()
+        if rep["issues"]:
+            out.raw("【问题】")
+            for i in rep["issues"]:
+                out.raw(f"  ✖ {i}")
+        else:
+            out.raw("【问题】无 ✓")
+        if rep["notes"]:
+            out.raw()
+            out.raw("【提示】")
+            for n in rep["notes"]:
+                out.raw(f"  · {n}")
+        out.finish()
+        return
+
+    # ---------- 切分模式：接力采样
+    if args.split is not None:
+        base = sigmamod.parse_sigmas(args.check_base) if args.check_base else \
+            sigmamod.calculate(fam, args.scheduler, args.steps, args.shift)
+        try:
+            high, low = sigmamod.split_at(base, float(args.split), overlap=True)
+        except ValueError as e:
+            die(str(e))
+        out.put("high", high)
+        out.put("low", low)
+        out.put("boundary", float(args.split))
+        out.raw(f"模型族: {fam}   原序列（{args.scheduler} {args.steps} 步）:")
+        out.raw("  " + sigmamod.to_string(base))
+        out.raw()
+        # 注意：段内步数 = 分隔后的值个数 - 1（含两端的点）
+        out.raw(f"【切在 sigma = {args.split}】（两段共用切点，接力不丢步）")
+        out.raw(f"  第一段 {len(high) - 1} 步 → 接 SplitSigmas 或直接 ManualSigmas:")
+        out.raw("    " + sigmamod.to_string(high))
+        out.raw(f"  第二段 {len(low) - 1} 步 → 接 SplitSigmas.low_sigmas:")
+        out.raw("    " + sigmamod.to_string(low))
+        out.raw()
+        out.raw(f"  两段共用切点 {high[-1]:.3f}（第一段尾 = 第二段头）—— 这是关键：")
+        out.raw("     若第二段不从切点接着走，中间那一段 sigma 就没被采样到；")
+        out.raw("     若两段各自从同一点重算，则同一段会被采两遍（画面反复推拉）。")
+        out.finish()
+        return
+
+    # ---------- 阶梯模式：多个步数对照
+    if args.ladder:
+        steps_list = [int(x) for x in re.findall(r"\d+", args.ladder)]
+        rows = sigmamod.ladders(steps_list, args.scheduler, fam, args.shift)
+        out.put("ladder", rows)
+        out.raw(f"模型族: {fam}   范围: {smax:.4f} → {smin:.4f}   "
+                f"调度器: {args.scheduler}")
+        out.raw()
+        for r in rows:
+            out.raw(f"── {r['steps']} 步 ──")
+            out.raw("  sigma: " + " ".join(f"{v:.3f}" for v in r["sigmas"]))
+            out.raw("  降幅 : " + " ".join(f"{v:.3f}" for v in r["spans"]))
+            if r["spans"]:
+                mx = max(r["spans"])
+                out.raw(f"  最大跨幅 {mx:.3f}（平均 {sum(r['spans'])/len(r['spans']):.3f}）"
+                        + ("   ⚠ 跨幅偏大，这里乱调风险高" if mx > 0.3 else ""))
+            out.raw()
+        out.raw("结论看最大跨幅：跨幅小的地方经得起微调，跨幅大的地方一动就变。")
+        out.finish()
+        return
+
+    # ---------- 默认：算一条序列
+    sig = sigmamod.calculate(fam, args.scheduler, args.steps, args.shift)
+    sp = sigmamod.spans(sig)
+    zone = sigmamod.safe_zone(sig)
+
+    out.put("sigmas", sig)
+    out.put("spans", sp)
+    out.put("family", fam)
+    out.put("scheduler", args.scheduler)
+    out.put("steps", args.steps)
+    if args.shift is not None:
+        out.put("shift", args.shift)
+
+    shift_txt = f"   shift={args.shift}" if args.shift is not None else ""
+    out.raw(f"模型族: {fam}   （{sigmamod.FAMILIES[fam]['desc']}）")
+    out.raw(f"sigma 范围: {smax:.4f} → {smin:.4f}{shift_txt}")
+    out.raw()
+    out.raw(f"{args.scheduler} 调度器 · {args.steps} 步:")
+    out.raw("  sigma: " + " ".join(f"{v:.3f}" for v in sig))
+    out.raw("  降幅 : " + " ".join(f"{v:.3f}" for v in sp))
+    out.raw()
+    out.raw("可直接粘进 ManualSigmas 控件:")
+    out.raw("  " + sigmamod.to_string(sig))
+
+    if zone["safe"] or zone["danger"]:
+        out.raw()
+        if zone["danger"]:
+            out.raw(f"⚠ 雷区（跨幅超过中位数 {zone.get('mid_span', 0):.3f}，"
+                    f"改这里画面变化大）：")
+            for d in zone["danger"][:8]:
+                out.raw(f"    {d}")
+        if zone["safe"]:
+            out.raw(f"✓ 相对可调（跨幅小于中位数，微调风险低）：")
+            for d in zone["safe"][:8]:
+                out.raw(f"    {d}")
+
+    if args.steps <= 8:
+        out.raw()
+        out.raw("⚠ 步数偏低：每步跨幅很大，自定义 sigma 的容错空间小。"
+                "低步数建议优先沿用作者推荐值。")
+    out.finish()
+
+
+def cmd_meta(args, out: Out) -> None:
+    """读 ComfyUI 生成图的元数据，并按组合聚合统计。
+
+    数据来自 PNG 文本块里嵌入的 ``prompt``（API 格式节点图），所以**不需要
+    ComfyUI 在线**，也不需要装任何插件节点 —— 纯离线、纯标准库。
+    """
+    target = args.image
+    if target and not os.path.exists(target):
+        # 允许只给文件名，在输出目录里找
+        root0 = metamod.default_output_dir(args.root)
+        if root0:
+            hits = [p for p in metamod.iter_images(root0, match=target)]
+            if hits:
+                target = hits[0]
+    if target and not os.path.exists(target):
+        die(f"找不到 {args.image!r}。给一张图、或一个目录，也可以用 --root 指定输出目录。")
+
+    if not target:
+        target = metamod.default_output_dir(args.root)
+        if not target:
+            die("没找到 ComfyUI 的输出目录。请用 `--root <输出目录>`，"
+                "或设置环境变量 CWF_OUTPUT 指向它。")
+
+    # ---- 单张图：打印这张的全部参数
+    if os.path.isfile(target):
+        rec = metamod.summary(target)
+        out.put("image", rec)
+        out.raw(f"图: {rec['name']}")
+        size = rec.get("size")
+        out.raw(f"  尺寸: {size[0]}x{size[1]}" if size else "  尺寸: ?")
+        if rec.get("bytes"):
+            out.raw(f"  大小: {human_size(rec['bytes'])}")
+        out.raw(f"  元数据: {'有' if rec.get('has_meta') else '无'}"
+                f"   键: {', '.join(rec.get('raw_keys') or []) or '—'}")
+        if not rec.get("has_meta"):
+            out.finish()
+            return
+        out.raw(f"  节点数: {rec.get('nodes', '?')}"
+                + (f"   工作流: {rec['workflow_title']}（{rec.get('workflow_nodes')} 节点）"
+                   if rec.get("workflow_title") else ""))
+        out.raw()
+        s = rec.get("sampler") or {}
+        out.raw("【采样】")
+        out.raw(f"  {s.get('_node', '?')}{('  「' + s['_title'] + '」') if s.get('_title') else ''}")
+        for k in ("sampler_name", "scheduler", "steps", "cfg", "denoise", "seed"):
+            if s.get(k) is not None:
+                out.raw(f"      {k:<14}= {s[k]}")
+        if s.get("model_file"):
+            out.raw(f"      {'model':<14}= {s['model_file']}")
+        out.raw()
+        if rec.get("models"):
+            out.raw("【模型】")
+            for k, v in rec["models"].items():
+                out.raw(f"  {k:<8}= {v}")
+            out.raw()
+        if rec.get("loras"):
+            out.raw(f"【LoRA】{len(rec['loras'])} 个")
+            for l in rec["loras"]:
+                out.raw(f"  {l['strength']:<6} {l['name']}")
+            out.raw()
+        for i, t in enumerate(rec.get("texts") or []):
+            out.raw(f"【提示词 {i + 1}】({len(t)} 字)")
+            out.raw("  " + t.replace("\n", "\n  "))
+        out.finish()
+        return
+
+    # ---- 目录：要么列图，要么按组合筛，要么统计
+    match = args.match
+    recs = [metamod.summary(p) for p in metamod.iter_images(target, match)]
+
+    if args.find:
+        # 组合名形如 "euler + beta"，用户多半写成 "euler beta"（不带加号），
+        # 甚至只写一半。所以按词做「全部命中」匹配，而不是整串子串匹配。
+        terms = [t for t in re.split(r"[\s+×*]+", args.find.lower()) if t]
+        recs = [r for r in recs
+                if all(t in (metamod.combo_of(r) or "").lower() for t in terms)]
+
+    if args.mode == "table" and not args.find:
+        agg = metamod.aggregate(recs)
+        out.put("aggregate", agg)
+        out.put("root", target)
+        out.raw(f"输出目录: {target}")
+        out.raw(f"共 {agg['total']} 张 · 有元数据 {agg['with_meta']} · "
+                f"无/不可解析 {agg['without_meta']}")
+        out.raw()
+        out.raw("【采样器 × 调度器】按出现次数排序")
+        for line in _fmt_combo_table(agg["combos"]):
+            out.raw(line)
+        out.raw()
+        out.raw("提示：`cwf meta <目录> --find \"euler beta\"` 能列出该组合下的所有图，"
+                "再看具体那些图。")
+        out.finish()
+        return
+
+    rows = []
+    for r in recs[:args.limit]:
+        s = r.get("sampler") or {}
+        rec = {
+            "file": r["file"],
+            "name": r["name"],
+            "size": r.get("size"),
+            "combo": metamod.combo_of(r),
+            "steps": s.get("steps"),
+            "cfg": s.get("cfg"),
+            "seed": s.get("seed"),
+            "model": s.get("model_file") or (r.get("models") or {}).get("unet"),
+            "loras": [l["name"] for l in r.get("loras") or []],
+            "title": r.get("workflow_title") or "",
+        }
+        if args.mode == "prompts":
+            rec["texts"] = r.get("texts") or []
+        rows.append(rec)
+
+    out.put("root", target)
+    out.put("matched", len(recs))
+    out.put("images", rows)
+
+    out.raw(f"输出目录: {target}")
+    out.raw(f"命中 {len(recs)} 张" + (f"（显示前 {len(rows)} 张）" if len(recs) > len(rows) else ""))
+    out.raw()
+    for rec in rows:
+        size = rec["size"]
+        out.raw(f"  {rec['name']}")
+        out.raw(f"      {size[0]}x{size[1]}  ·  {rec['combo'] or '无采样参数'}"
+                f"  ·  steps={rec['steps']} cfg={rec['cfg']}")
+        if rec["model"]:
+            out.raw(f"      模型: {rec['model']}")
+        if rec["loras"]:
+            out.raw(f"      LoRA: {', '.join(os.path.basename(l) for l in rec['loras'])}")
+        if args.mode == "prompts" and rec.get("texts"):
+            for t in rec["texts"]:
+                out.raw("      提示词: " + t.replace("\n", " ")[:200])
+    out.finish()
+
+
 # ================================================================ 参数表
 
 
@@ -3228,6 +3523,39 @@ def build_parser() -> argparse.ArgumentParser:
     common(a); a.set_defaults(func=cmd_stats)
 
     # ---- schema
+    # ---- 生成图元数据
+    a = sub.add_parser("meta", help="读生成图的元数据，按采样器×调度器统计")
+    a.add_argument("image", nargs="?", default=None,
+                   help="一张图 / 一个目录；省略则用 ComfyUI 的 output 目录")
+    a.add_argument("--root", default=None, help="输出目录（默认自动探测）")
+    a.add_argument("--match", default=None, help="只看文件名包含该串的图")
+    a.add_argument("--find", default=None, metavar="组合",
+                   help='按「采样器+调度器」筛，如 --find "euler beta"')
+    a.add_argument("--mode", default="list", choices=["list", "table", "prompts"],
+                   help="list 逐张列（默认）/ table 组合统计 / prompts 连提示词一起")
+    a.add_argument("--limit", type=int, default=30, help="最多列多少张，默认 30")
+    common(a); a.set_defaults(func=cmd_meta)
+
+    # ---- sigma 表
+    a = sub.add_parser("sigma", help="算 sigma 表 / 体检手写序列 / 接力切分")
+    a.add_argument("model", nargs="?", default=None,
+                   help="模型文件名（用来猜模型族），如 krea2_turbo_int8_convrot.safetensors")
+    a.add_argument("--family", default=None, choices=list(sigmamod.FAMILIES.keys()),
+                   help="直接指定模型族，跳过猜测")
+    a.add_argument("--steps", type=int, default=10, help="步数，默认 10")
+    a.add_argument("--scheduler", default="beta", help="调度器，默认 beta")
+    a.add_argument("--shift", type=float, default=None,
+                   help="模型 shift（只对 flux 族有效，默认 1.15）")
+    a.add_argument("--check", default=None, metavar="序列",
+                   help='体检一串手写 sigma，如 --check "1, 0.8, 0.5, 0"')
+    a.add_argument("--check-base", default=None,
+                   help="配合 --split：用这串序列当底子而不是现算")
+    a.add_argument("--split", default=None, metavar="SIGMA",
+                   help="在某个 sigma 值处切成两段（接力采样）")
+    a.add_argument("--ladder", default=None, metavar="步数列表",
+                   help='多个步数对照，如 --ladder "4,8,13,20"')
+    common(a, out_flag=False); a.set_defaults(func=cmd_sigma)
+
     sc = sub.add_parser("schema", help="查 ComfyUI 节点字典")
     scs = sc.add_subparsers(dest="sub", required=True)
     a = scs.add_parser("search", help="搜索节点类型")
